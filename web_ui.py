@@ -284,12 +284,53 @@ HTML = """<!doctype html>
         transition: all 0.3s ease;
       }
       .col:hover { border-color: rgba(148, 163, 184, 0.4); }
+      .col.collapsed {
+        flex: 0 0 48px;
+        min-width: 48px;
+      }
+      .col.collapsed .header h3,
+      .col.collapsed .hint,
+      .col.collapsed .graph,
+      .col.collapsed .details {
+        display: none;
+      }
       .mid { flex: 0 0 460px; }
       .header {
         padding: 20px 24px;
         border-bottom: 1px solid var(--border);
         background: rgba(15, 23, 42, 0.5);
+        position: relative;
       }
+      .toggle-btn {
+        position: absolute;
+        top: 50%;
+        transform: translateY(-50%);
+        background: rgba(59, 130, 246, 0.2);
+        border: 1px solid var(--accent);
+        color: var(--accent);
+        width: 28px;
+        height: 28px;
+        border-radius: 6px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 16px;
+        transition: all 0.2s ease;
+        padding: 0;
+      }
+      .toggle-btn:hover {
+        background: rgba(59, 130, 246, 0.3);
+        transform: translateY(-50%) scale(1.1);
+      }
+      .toggle-left { right: 12px; }
+      .toggle-right { left: 12px; }
+      .collapsed .toggle-btn {
+        top: 12px;
+        transform: none;
+      }
+      .collapsed .toggle-left { right: 10px; }
+      .collapsed .toggle-right { left: 10px; }
       .header h3 {
         margin: 0 0 4px 0;
         font-size: 16px;
@@ -475,10 +516,11 @@ HTML = """<!doctype html>
   </head>
   <body>
     <div class="app">
-      <div class="col">
+      <div class="col" id="leftCol">
         <div class="header">
           <h3>📥 原始模型</h3>
           <div class="hint">导出/输入 ONNX · <span id="origStats" class="badge badge-info">-</span></div>
+          <button class="toggle-btn toggle-left" id="toggleLeft" title="收起/展开">◀</button>
         </div>
         <div class="graph" id="origGraph"></div>
         <div class="details" id="origDetails">上传模型后显示</div>
@@ -560,10 +602,11 @@ HTML = """<!doctype html>
         </div>
       </div>
 
-      <div class="col">
+      <div class="col" id="rightCol">
         <div class="header">
           <h3>📤 裁剪模型</h3>
           <div class="hint">Cut + Transpose · <span id="cutStats" class="badge badge-success">-</span></div>
+          <button class="toggle-btn toggle-right" id="toggleRight" title="收起/展开">▶</button>
         </div>
         <div class="graph" id="cutGraph"></div>
         <div class="details" id="cutDetails">转换后显示</div>
@@ -719,6 +762,21 @@ HTML = """<!doctype html>
           return; 
         }
         window.location.href = currentDownloadUrl;
+      });
+
+      // Toggle collapse for left and right panels
+      document.getElementById('toggleLeft').addEventListener('click', function() {
+        const col = document.getElementById('leftCol');
+        const btn = document.getElementById('toggleLeft');
+        col.classList.toggle('collapsed');
+        btn.textContent = col.classList.contains('collapsed') ? '▶' : '◀';
+      });
+
+      document.getElementById('toggleRight').addEventListener('click', function() {
+        const col = document.getElementById('rightCol');
+        const btn = document.getElementById('toggleRight');
+        col.classList.toggle('collapsed');
+        btn.textContent = col.classList.contains('collapsed') ? '◀' : '▶';
       });
     </script>
   </body>
