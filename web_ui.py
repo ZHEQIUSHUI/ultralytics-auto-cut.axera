@@ -795,7 +795,8 @@ async def api_preview(
         )
         try:
             from onnx_cut import _detect_plan
-            plan = _detect_plan(onnx.load(str(original_onnx)), cfg)
+            model_proto = onnx.load(str(original_onnx))
+            plan = _detect_plan(model_proto, cfg)
             outputs = [f"{name}: {src.shape} -> {shape}" for (src, name, shape) in plan.outputs]
             
             # 保存到 JOBS 以便访问
@@ -814,9 +815,27 @@ async def api_preview(
                 "outputs": outputs,
                 "original_onnx_url": f"/api/view_onnx/{job_id}/original"
             })
-        except Exception as e:
+        except RuntimeError as e:
             shutil.rmtree(tmpdir, ignore_errors=True)
-            return JSONResponse({"detail": str(e)}, status_code=500)
+            error_msg = str(e)
+            if "No candidates to pick from" in error_msg:
+                error_msg = (
+                    "无法识别模型结构。可能原因：\n"
+                    "1. 模型不是标准的 YOLOv5/v8/v11/v26\n"
+                    "2. 输入尺寸(imgsz)不正确\n"
+                    "3. 类别数(classes)不正确\n"
+                    "4. 模型已经被裁剪过\n\n"
+                    "建议：\n"
+                    "- 检查 imgsz 参数（如 640, 416, 1280 等）\n"
+                    "- 检查 classes 参数（COCO=80）\n"
+                    "- 尝试手动指定 model_type"
+                )
+            return JSONResponse({"detail": error_msg}, status_code=400)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            shutil.rmtree(tmpdir, ignore_errors=True)
+            return JSONResponse({"detail": f"处理失败: {str(e)}"}, status_code=500)
     except Exception as e:
         shutil.rmtree(tmpdir, ignore_errors=True)
         return JSONResponse({"detail": str(e)}, status_code=500)
@@ -888,12 +907,22 @@ async def api_convert(
 
     # Use a quick dry-run to report outputs/model_type.
     try:
-        from onnx_cut import _detect_plan  # type: ignore
-
+        from onnx_cut import _detect_plan
         plan = _detect_plan(onnx.load(str(original_onnx)), cfg)
         outputs = [f"{name}: {src.shape} -> {shape}" for (src, name, shape) in plan.outputs]
         detected_type = plan.model_type
-    except Exception:
+    except RuntimeError as e:
+        error_msg = str(e)
+        if "No candidates to pick from" in error_msg:
+            error_msg = (
+                "无法识别模型结构。可能原因：\n"
+                "1. 模型不是标准的 YOLOv5/v8/v11/v26\n"
+                "2. 输入尺寸(imgsz)不正确\n"
+                "3. 类别数(classes)不正确\n"
+                "4. 模型已经被裁剪过"
+            )
+        return JSONResponse({"detail": error_msg}, status_code=400)
+    except Exception as e:
         outputs = []
         detected_type = model_type
 
