@@ -37,6 +37,8 @@ python ultralytics_auto_cut.py model.onnx -o output.onnx
 
 ### Web UI（推荐）
 
+![Web UI 预览](image.png)
+
 **快速启动：**
 ```bash
 ./start_webui.sh
@@ -53,6 +55,7 @@ python web_ui.py --host 127.0.0.1 --port 18080
 - 🔍 预览功能（识别模型类型和输出张量）
 - 📥 一键转换和下载
 - 🖱️ 交互式节点查看（点击节点查看详细信息）
+- 🔘 可收起左右面板以查看更多模型细节
 
 ### CLI 命令行
 
