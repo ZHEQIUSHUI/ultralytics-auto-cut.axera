@@ -952,7 +952,7 @@ def api_download(job_id: str) -> FileResponse:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Web UI for ultralytics-auto-cut")
-    ap.add_argument("--host", default="127.0.0.1")
+    ap.add_argument("--host", default="0.0.0.0")
     ap.add_argument("--port", type=int, default=18080)
     args = ap.parse_args(argv)
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
