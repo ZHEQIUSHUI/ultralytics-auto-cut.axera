@@ -580,13 +580,18 @@ HTML = """<!doctype html>
         document.getElementById('downloadBtn').disabled = !enabled;
       }
 
-      function setStatus(msg, icon = '💡') {
+      function setStatus(msg, icon) {
+        if (!icon) icon = '💡';
         document.getElementById('statusBox').textContent = icon + ' ' + msg;
       }
 
       function showNetron(containerId, modelUrl) {
         const container = document.getElementById(containerId);
-        container.innerHTML = `<iframe src="https://netron.app/?url=${encodeURIComponent(window.location.origin + modelUrl)}" style="width:100%;height:100%;border:none;"></iframe>`;
+        const iframe = document.createElement('iframe');
+        iframe.src = 'https://netron.app/?url=' + encodeURIComponent(window.location.origin + modelUrl);
+        iframe.style.cssText = 'width:100%;height:100%;border:none;';
+        container.innerHTML = '';
+        container.appendChild(iframe);
       }
 
       async function buildFormData() {
@@ -629,9 +634,12 @@ HTML = """<!doctype html>
             return; 
           }
           
-          setStatus(`[预览完成]\nmodel_type: ${data.model_type}\noutputs:\n  ` + data.outputs.join('\n  '), '✅');
+          const msg = '[预览完成]' + String.fromCharCode(10) + 
+                      'model_type: ' + data.model_type + String.fromCharCode(10) +
+                      'outputs:' + String.fromCharCode(10) + '  ' + data.outputs.join(String.fromCharCode(10) + '  ');
+          setStatus(msg, '✅');
           document.getElementById('origStats').textContent = data.model_type;
-          document.getElementById('origDetails').textContent = `模型类型: ${data.model_type}\n输出数量: ${data.outputs.length}`;
+          document.getElementById('origDetails').textContent = '模型类型: ' + data.model_type + String.fromCharCode(10) + '输出数量: ' + data.outputs.length;
           
           if (data.original_onnx_url) {
             showNetron('origGraph', data.original_onnx_url);
@@ -666,7 +674,10 @@ HTML = """<!doctype html>
             return;
           }
           
-          setStatus(`[转换完成]\nmodel_type: ${data.model_type}\noutputs:\n  ` + data.outputs.join('\n  '), '✅');
+          const msg = '[转换完成]' + String.fromCharCode(10) + 
+                      'model_type: ' + data.model_type + String.fromCharCode(10) +
+                      'outputs:' + String.fromCharCode(10) + '  ' + data.outputs.join(String.fromCharCode(10) + '  ');
+          setStatus(msg, '✅');
           
           currentJobId = data.job_id;
           currentDownloadUrl = data.download_url;
@@ -674,8 +685,8 @@ HTML = """<!doctype html>
           
           document.getElementById('origStats').textContent = data.model_type;
           document.getElementById('cutStats').textContent = 'NHWC';
-          document.getElementById('origDetails').textContent = `模型类型: ${data.model_type}\n输出数量: ${data.outputs.length}`;
-          document.getElementById('cutDetails').textContent = `裁剪完成\n输出数量: ${data.outputs.length}\n格式: NHWC`;
+          document.getElementById('origDetails').textContent = '模型类型: ' + data.model_type + String.fromCharCode(10) + '输出数量: ' + data.outputs.length;
+          document.getElementById('cutDetails').textContent = '裁剪完成' + String.fromCharCode(10) + '输出数量: ' + data.outputs.length + String.fromCharCode(10) + '格式: NHWC';
           
           if (data.original_onnx_url) {
             showNetron('origGraph', data.original_onnx_url);
@@ -692,15 +703,15 @@ HTML = """<!doctype html>
         }
       }
 
-      document.getElementById('previewBtn').addEventListener('click', () => {
+      document.getElementById('previewBtn').addEventListener('click', function() {
         console.log('Preview button event triggered');
         preview();
       });
-      document.getElementById('convertBtn').addEventListener('click', () => {
+      document.getElementById('convertBtn').addEventListener('click', function() {
         console.log('Convert button event triggered');
         convert();
       });
-      document.getElementById('downloadBtn').addEventListener('click', () => {
+      document.getElementById('downloadBtn').addEventListener('click', function() {
         console.log('Download button event triggered');
         if (!currentDownloadUrl) { 
           setStatus('请先转换生成模型', '⚠️'); 
