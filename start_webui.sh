@@ -1,7 +1,7 @@
 #!/bin/bash
 # 启动 Web UI 服务
 
-HOST="${HOST:-127.0.0.1}"
+HOST="${HOST:-0.0.0.0}"
 PORT="${PORT:-18080}"
 
 echo "🚀 Starting Ultralytics Auto Cut Web UI..."

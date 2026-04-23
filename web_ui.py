@@ -237,6 +237,7 @@ HTML = """<!doctype html>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Ultralytics Auto Cut - AXERA</title>
+    <script src="https://cdn.jsdelivr.net/npm/netron@7.6.9/dist/netron.js"></script>
     <style>
       * { box-sizing: border-box; }
       :root {
@@ -304,8 +305,19 @@ HTML = """<!doctype html>
         flex: 1;
         position: relative;
         background: rgba(15, 23, 42, 0.3);
+        overflow: hidden;
       }
-      .graph > div { position: absolute; inset: 0; }
+      .graph > div, .graph > iframe { 
+        position: absolute; 
+        inset: 0;
+        border: none;
+        background: #0f172a;
+      }
+      .netron-container {
+        width: 100%;
+        height: 100%;
+        background: #0f172a;
+      }
       .details {
         border-top: 1px solid var(--border);
         padding: 12px 16px;
@@ -471,8 +483,8 @@ HTML = """<!doctype html>
           <h3>📥 原始模型</h3>
           <div class="hint">导出/输入 ONNX · <span id="origStats" class="badge badge-info">-</span></div>
         </div>
-        <div class="graph"><div id="origGraph"></div></div>
-        <div class="details" id="origDetails">点击节点查看详情</div>
+        <div class="graph"><div id="origGraph" class="netron-container"></div></div>
+        <div class="details" id="origDetails">上传模型后显示</div>
       </div>
 
       <div class="col mid">
@@ -547,7 +559,7 @@ HTML = """<!doctype html>
           <div class="status" id="statusBox">💡 请选择 .pt 或 .onnx 模型文件开始</div>
         </div>
         <div class="footer">
-          ONNX 结构可视化 · 节点=算子 · 边=张量依赖
+          使用 Netron 风格可视化 · 支持交互式查看
         </div>
       </div>
 
@@ -556,8 +568,8 @@ HTML = """<!doctype html>
           <h3>📤 裁剪模型</h3>
           <div class="hint">Cut + Transpose · <span id="cutStats" class="badge badge-success">-</span></div>
         </div>
-        <div class="graph"><div id="cutGraph"></div></div>
-        <div class="details" id="cutDetails">点击节点查看详情</div>
+        <div class="graph"><div id="cutGraph" class="netron-container"></div></div>
+        <div class="details" id="cutDetails">转换后显示</div>
       </div>
     </div>
 
@@ -565,124 +577,41 @@ HTML = """<!doctype html>
     <script src="/static/dagre.min.js"></script>
     <script src="/static/cytoscape-dagre.js"></script>
     <script>
-      const hasCytoscape = typeof window.cytoscape !== 'undefined';
-      const hasDagrePlugin = typeof window.cytoscapeDagre !== 'undefined';
-
-      if (hasCytoscape && hasDagrePlugin) {
-        try { cytoscape.use(cytoscapeDagre); } catch (e) { console.warn('cytoscape.use(dagre) failed', e); }
-      }
-
-      let origCy = null;
-      let cutCy = null;
       let currentDownloadUrl = null;
+      let currentJobId = null;
 
       function setDownloadEnabled(enabled) {
-        const btn = document.getElementById('downloadBtn');
-        btn.disabled = !enabled;
+        document.getElementById('downloadBtn').disabled = !enabled;
       }
-
-      function layoutConfig() {
-        if (hasCytoscape && hasDagrePlugin) {
-          return { name: 'dagre', rankDir: 'TB', nodeSep: 20, edgeSep: 8, rankSep: 50 };
-        }
-        return { name: 'breadthfirst', directed: true, padding: 16, spacingFactor: 1.2 };
-      }
-
-      function makeCy(containerId) {
-        if (!hasCytoscape) return null;
-        const container = document.getElementById(containerId);
-        return cytoscape({
-          container,
-          elements: [],
-          style: [
-            { selector: 'node', style: {
-              'background-color': '#1e293b',
-              'label': 'data(label)',
-              'font-size': 11,
-              'text-wrap': 'wrap',
-              'text-max-width': 160,
-              'color': '#f1f5f9',
-              'text-valign': 'center',
-              'text-halign': 'center',
-              'padding': 10,
-              'width': 'label',
-              'height': 'label',
-              'shape': 'round-rectangle',
-              'border-width': 2,
-              'border-color': 'rgba(148, 163, 184, 0.3)',
-              'transition-property': 'background-color, border-color',
-              'transition-duration': '0.2s'
-            }},
-            { selector: 'node:hover', style: {
-              'background-color': '#334155',
-              'border-color': '#3b82f6'
-            }},
-            { selector: 'node[kind=\"input\"]', style: {
-              'background-color': '#065f46',
-              'border-color': '#10b981'
-            }},
-            { selector: 'node[kind=\"output\"]', style: {
-              'background-color': '#7c2d12',
-              'border-color': '#f59e0b'
-            }},
-            { selector: 'node[kind=\"init\"]', style: {
-              'background-color': '#422006',
-              'border-color': '#d97706'
-            }},
-            { selector: 'edge', style: {
-              'width': 2,
-              'line-color': 'rgba(148, 163, 184, 0.4)',
-              'target-arrow-color': 'rgba(148, 163, 184, 0.4)',
-              'target-arrow-shape': 'triangle',
-              'curve-style': 'bezier',
-              'arrow-scale': 0.8
-            }}
-          ],
-          layout: layoutConfig(),
-          wheelSensitivity: 0.15
-        });
-      }
-
-      function renderGraph(cy, graphJson, statsElId) {
-        if (!cy) return;
-        cy.elements().remove();
-        cy.add(graphJson.elements.nodes);
-        cy.add(graphJson.elements.edges);
-        cy.layout(layoutConfig()).run();
-        const s = graphJson.stats || {};
-        document.getElementById(statsElId).textContent = `${s.nodes || '-'} nodes · ${s.edges || '-'} edges`;
-      }
-
-      origCy = makeCy('origGraph');
-      cutCy = makeCy('cutGraph');
-      if (!origCy) {
-        document.getElementById('origGraph').innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#94a3b8;font-size:13px;">可视化组件未加载（仍可转换/下载）</div>';
-        document.getElementById('cutGraph').innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#94a3b8;font-size:13px;">可视化组件未加载（仍可转换/下载）</div>';
-      }
-
-      function showDetails(kind, nodeData) {
-        const el = document.getElementById(kind === 'orig' ? 'origDetails' : 'cutDetails');
-        if (!nodeData) { el.textContent = '点击节点查看详情'; return; }
-        const name = nodeData.name ? ('\\n' + nodeData.name) : '';
-        const io = nodeData.io || { inputs: [], outputs: [] };
-        const ins = (io.inputs || []).map(x => `${x.name}${x.shape ? (' : ' + x.shape) : ''}`).slice(0, 8);
-        const outs = (io.outputs || []).map(x => `${x.name}${x.shape ? (' : ' + x.shape) : ''}`).slice(0, 8);
-        let msg = `${nodeData.op_type || nodeData.kind}${name}`;
-        if (ins.length) msg += `\\ninputs:\\n  ` + ins.join('\\n  ');
-        if (outs.length) msg += `\\noutputs:\\n  ` + outs.join('\\n  ');
-        el.textContent = msg;
-      }
-      if (origCy) origCy.on('tap', 'node', (evt) => { showDetails('orig', evt.target.data()); });
-      if (cutCy) cutCy.on('tap', 'node', (evt) => { showDetails('cut', evt.target.data()); });
 
       function setStatus(msg, icon = '💡') {
         document.getElementById('statusBox').textContent = icon + ' ' + msg;
       }
 
-      async function buildFormData(includeFile) {
+      async function renderNetron(containerId, modelUrl, statsElId) {
+        const container = document.getElementById(containerId);
+        container.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#94a3b8;">加载中...</div>';
+        
+        try {
+          const view = new netron.View(container);
+          await view.open(modelUrl);
+          
+          if (statsElId) {
+            document.getElementById(statsElId).textContent = '已加载';
+          }
+        } catch (e) {
+          container.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#ef4444;padding:20px;text-align:center;">加载失败: ${e.message}</div>`;
+          console.error('Netron render error:', e);
+        }
+      }
+
+      async function buildFormData() {
         const fd = new FormData();
         const f = document.getElementById('modelFile').files[0];
-        if (!f) { setStatus('请先选择一个 .pt 或 .onnx 文件', '⚠️'); return null; }
+        if (!f) { 
+          setStatus('请先选择一个 .pt 或 .onnx 文件', '⚠️'); 
+          return null; 
+        }
         fd.append('model_file', f);
         fd.append('imgsz', document.getElementById('imgsz').value);
         fd.append('model_type', document.getElementById('modelType').value);
@@ -696,25 +625,39 @@ HTML = """<!doctype html>
       }
 
       async function preview() {
-        const fd = await buildFormData(true);
+        const fd = await buildFormData();
         if (!fd) return;
+        
         const btn = document.getElementById('previewBtn');
         btn.disabled = true;
         setStatus('预览中…（识别模型类型和输出张量）', '🔍');
+        
         try {
           const resp = await fetch('/api/preview', { method: 'POST', body: fd });
           const data = await resp.json();
-          if (!resp.ok) { setStatus('预览失败：' + (data.detail || JSON.stringify(data)), '❌'); return; }
-          setStatus(`[预览完成]\\nmodel_type: ${data.model_type}\\noutputs:\\n  ` + data.outputs.join('\\n  '), '✅');
+          
+          if (!resp.ok) { 
+            setStatus('预览失败：' + (data.detail || JSON.stringify(data)), '❌'); 
+            return; 
+          }
+          
+          setStatus(`[预览完成]\nmodel_type: ${data.model_type}\noutputs:\n  ` + data.outputs.join('\n  '), '✅');
+          
+          // 显示原始模型
+          if (data.original_onnx_url) {
+            await renderNetron('origGraph', data.original_onnx_url, 'origStats');
+            document.getElementById('origDetails').textContent = `模型类型: ${data.model_type}\n输出数量: ${data.outputs.length}`;
+          }
         } catch (e) {
           setStatus('异常：' + e, '❌');
+          console.error('Preview error:', e);
         } finally {
           btn.disabled = false;
         }
       }
 
       async function convert() {
-        const fd = await buildFormData(true);
+        const fd = await buildFormData();
         if (!fd) return;
 
         setDownloadEnabled(false);
@@ -729,19 +672,31 @@ HTML = """<!doctype html>
           const text = await resp.text();
           let data = null;
           try { data = JSON.parse(text); } catch (e) { data = { detail: text || String(e) }; }
+          
           if (!resp.ok) {
             setStatus('失败：' + (data.detail || JSON.stringify(data)), '❌');
             return;
           }
-          setStatus(`[转换完成]\\nmodel_type: ${data.model_type}\\noutputs:\\n  ` + data.outputs.join('\\n  '), '✅');
-          renderGraph(origCy, data.original_graph, 'origStats');
-          renderGraph(cutCy, data.cut_graph, 'cutStats');
-          showDetails('orig', null);
-          showDetails('cut', null);
+          
+          setStatus(`[转换完成]\nmodel_type: ${data.model_type}\noutputs:\n  ` + data.outputs.join('\n  '), '✅');
+          
+          currentJobId = data.job_id;
           currentDownloadUrl = data.download_url;
           setDownloadEnabled(true);
+          
+          // 显示原始和裁剪后的模型
+          if (data.original_onnx_url) {
+            await renderNetron('origGraph', data.original_onnx_url, 'origStats');
+            document.getElementById('origDetails').textContent = `模型类型: ${data.model_type}\n输出数量: ${data.outputs.length}`;
+          }
+          
+          if (data.cut_onnx_url) {
+            await renderNetron('cutGraph', data.cut_onnx_url, 'cutStats');
+            document.getElementById('cutDetails').textContent = `裁剪完成\n输出数量: ${data.outputs.length}\n格式: NHWC`;
+          }
         } catch (e) {
           setStatus('异常：' + e, '❌');
+          console.error('Convert error:', e);
         } finally {
           btn.disabled = false;
         }
@@ -750,7 +705,10 @@ HTML = """<!doctype html>
       document.getElementById('previewBtn').addEventListener('click', preview);
       document.getElementById('convertBtn').addEventListener('click', convert);
       document.getElementById('downloadBtn').addEventListener('click', () => {
-        if (!currentDownloadUrl) { setStatus('请先转换生成模型', '⚠️'); return; }
+        if (!currentDownloadUrl) { 
+          setStatus('请先转换生成模型', '⚠️'); 
+          return; 
+        }
         window.location.href = currentDownloadUrl;
       });
     </script>
@@ -831,11 +789,29 @@ async def api_preview(
             from onnx_cut import _detect_plan
             plan = _detect_plan(onnx.load(str(original_onnx)), cfg)
             outputs = [f"{name}: {src.shape} -> {shape}" for (src, name, shape) in plan.outputs]
-            return JSONResponse({"model_type": plan.model_type, "outputs": outputs})
+            
+            # 保存到 JOBS 以便访问
+            job_id = uuid.uuid4().hex
+            JOBS[job_id] = JobInfo(
+                created_at=time.time(),
+                input_name=model_file.filename or "model",
+                work_dir=str(tmpdir),
+                original_onnx_path=str(original_onnx),
+                cut_onnx_path="",
+            )
+            _purge_old_jobs()
+            
+            return JSONResponse({
+                "model_type": plan.model_type, 
+                "outputs": outputs,
+                "original_onnx_url": f"/api/view_onnx/{job_id}/original"
+            })
         except Exception as e:
+            shutil.rmtree(tmpdir, ignore_errors=True)
             return JSONResponse({"detail": str(e)}, status_code=500)
-    finally:
+    except Exception as e:
         shutil.rmtree(tmpdir, ignore_errors=True)
+        return JSONResponse({"detail": str(e)}, status_code=500)
 
 
 @app.post("/api/convert")
@@ -931,8 +907,30 @@ async def api_convert(
             "original_graph": original_graph,
             "cut_graph": cut_graph,
             "download_url": f"/api/download/{job_id}",
+            "original_onnx_url": f"/api/view_onnx/{job_id}/original",
+            "cut_onnx_url": f"/api/view_onnx/{job_id}/cut",
         }
     )
+
+
+@app.get("/api/view_onnx/{job_id}/{model_type}")
+def api_view_onnx(job_id: str, model_type: str) -> FileResponse:
+    """Serve ONNX file for Netron visualization"""
+    info = JOBS.get(job_id)
+    if not info:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    if model_type == "original":
+        path = info.original_onnx_path
+    elif model_type == "cut":
+        path = info.cut_onnx_path
+    else:
+        raise HTTPException(status_code=400, detail="Invalid model_type")
+    
+    if not path or not Path(path).exists():
+        raise HTTPException(status_code=404, detail="Model file not found")
+    
+    return FileResponse(path=path, media_type="application/octet-stream")
 
 
 @app.get("/api/download/{job_id}")
