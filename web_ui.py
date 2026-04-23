@@ -17,6 +17,7 @@ from fastapi import FastAPI, File, Form, UploadFile
 from fastapi import HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
 
 from export_ultralytics import export_pt_to_onnx
 from onnx_cut import CutConfig, cut_ultralytics_onnx
@@ -727,6 +728,16 @@ HTML = """<!doctype html>
 
 STATIC_DIR = Path(__file__).with_name("static")
 app = FastAPI()
+
+# 添加 CORS 支持
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
