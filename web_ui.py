@@ -237,7 +237,6 @@ HTML = """<!doctype html>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Ultralytics Auto Cut - AXERA</title>
-    <script src="https://cdn.jsdelivr.net/npm/netron@7.6.9/dist/netron.js"></script>
     <style>
       * { box-sizing: border-box; }
       :root {
@@ -307,16 +306,13 @@ HTML = """<!doctype html>
         background: rgba(15, 23, 42, 0.3);
         overflow: hidden;
       }
-      .graph > div, .graph > iframe { 
+      .graph iframe { 
         position: absolute; 
         inset: 0;
         border: none;
         background: #0f172a;
-      }
-      .netron-container {
         width: 100%;
         height: 100%;
-        background: #0f172a;
       }
       .details {
         border-top: 1px solid var(--border);
@@ -483,7 +479,7 @@ HTML = """<!doctype html>
           <h3>📥 原始模型</h3>
           <div class="hint">导出/输入 ONNX · <span id="origStats" class="badge badge-info">-</span></div>
         </div>
-        <div class="graph"><div id="origGraph" class="netron-container"></div></div>
+        <div class="graph" id="origGraph"></div>
         <div class="details" id="origDetails">上传模型后显示</div>
       </div>
 
@@ -559,7 +555,7 @@ HTML = """<!doctype html>
           <div class="status" id="statusBox">💡 请选择 .pt 或 .onnx 模型文件开始</div>
         </div>
         <div class="footer">
-          使用 Netron 风格可视化 · 支持交互式查看
+          使用 Netron 可视化 · 点击查看完整模型结构
         </div>
       </div>
 
@@ -568,7 +564,7 @@ HTML = """<!doctype html>
           <h3>📤 裁剪模型</h3>
           <div class="hint">Cut + Transpose · <span id="cutStats" class="badge badge-success">-</span></div>
         </div>
-        <div class="graph"><div id="cutGraph" class="netron-container"></div></div>
+        <div class="graph" id="cutGraph"></div>
         <div class="details" id="cutDetails">转换后显示</div>
       </div>
     </div>
@@ -588,21 +584,9 @@ HTML = """<!doctype html>
         document.getElementById('statusBox').textContent = icon + ' ' + msg;
       }
 
-      async function renderNetron(containerId, modelUrl, statsElId) {
+      function showNetron(containerId, modelUrl) {
         const container = document.getElementById(containerId);
-        container.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#94a3b8;">加载中...</div>';
-        
-        try {
-          const view = new netron.View(container);
-          await view.open(modelUrl);
-          
-          if (statsElId) {
-            document.getElementById(statsElId).textContent = '已加载';
-          }
-        } catch (e) {
-          container.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#ef4444;padding:20px;text-align:center;">加载失败: ${e.message}</div>`;
-          console.error('Netron render error:', e);
-        }
+        container.innerHTML = `<iframe src="https://netron.app/?url=${encodeURIComponent(window.location.origin + modelUrl)}" style="width:100%;height:100%;border:none;"></iframe>`;
       }
 
       async function buildFormData() {
@@ -642,14 +626,14 @@ HTML = """<!doctype html>
           }
           
           setStatus(`[预览完成]\nmodel_type: ${data.model_type}\noutputs:\n  ` + data.outputs.join('\n  '), '✅');
+          document.getElementById('origStats').textContent = data.model_type;
+          document.getElementById('origDetails').textContent = `模型类型: ${data.model_type}\n输出数量: ${data.outputs.length}`;
           
-          // 显示原始模型
           if (data.original_onnx_url) {
-            await renderNetron('origGraph', data.original_onnx_url, 'origStats');
-            document.getElementById('origDetails').textContent = `模型类型: ${data.model_type}\n输出数量: ${data.outputs.length}`;
+            showNetron('origGraph', data.original_onnx_url);
           }
         } catch (e) {
-          setStatus('异常：' + e, '❌');
+          setStatus('异常：' + e.message, '❌');
           console.error('Preview error:', e);
         } finally {
           btn.disabled = false;
@@ -684,18 +668,20 @@ HTML = """<!doctype html>
           currentDownloadUrl = data.download_url;
           setDownloadEnabled(true);
           
-          // 显示原始和裁剪后的模型
+          document.getElementById('origStats').textContent = data.model_type;
+          document.getElementById('cutStats').textContent = 'NHWC';
+          document.getElementById('origDetails').textContent = `模型类型: ${data.model_type}\n输出数量: ${data.outputs.length}`;
+          document.getElementById('cutDetails').textContent = `裁剪完成\n输出数量: ${data.outputs.length}\n格式: NHWC`;
+          
           if (data.original_onnx_url) {
-            await renderNetron('origGraph', data.original_onnx_url, 'origStats');
-            document.getElementById('origDetails').textContent = `模型类型: ${data.model_type}\n输出数量: ${data.outputs.length}`;
+            showNetron('origGraph', data.original_onnx_url);
           }
           
           if (data.cut_onnx_url) {
-            await renderNetron('cutGraph', data.cut_onnx_url, 'cutStats');
-            document.getElementById('cutDetails').textContent = `裁剪完成\n输出数量: ${data.outputs.length}\n格式: NHWC`;
+            showNetron('cutGraph', data.cut_onnx_url);
           }
         } catch (e) {
-          setStatus('异常：' + e, '❌');
+          setStatus('异常：' + e.message, '❌');
           console.error('Convert error:', e);
         } finally {
           btn.disabled = false;
