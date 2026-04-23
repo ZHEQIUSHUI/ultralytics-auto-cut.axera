@@ -609,6 +609,7 @@ HTML = """<!doctype html>
       }
 
       async function preview() {
+        console.log('Preview button clicked');
         const fd = await buildFormData();
         if (!fd) return;
         
@@ -617,8 +618,11 @@ HTML = """<!doctype html>
         setStatus('预览中…（识别模型类型和输出张量）', '🔍');
         
         try {
+          console.log('Sending preview request...');
           const resp = await fetch('/api/preview', { method: 'POST', body: fd });
+          console.log('Response status:', resp.status);
           const data = await resp.json();
+          console.log('Response data:', data);
           
           if (!resp.ok) { 
             setStatus('预览失败：' + (data.detail || JSON.stringify(data)), '❌'); 
@@ -633,8 +637,8 @@ HTML = """<!doctype html>
             showNetron('origGraph', data.original_onnx_url);
           }
         } catch (e) {
-          setStatus('异常：' + e.message, '❌');
           console.error('Preview error:', e);
+          setStatus('异常：' + e.message, '❌');
         } finally {
           btn.disabled = false;
         }
@@ -688,9 +692,16 @@ HTML = """<!doctype html>
         }
       }
 
-      document.getElementById('previewBtn').addEventListener('click', preview);
-      document.getElementById('convertBtn').addEventListener('click', convert);
+      document.getElementById('previewBtn').addEventListener('click', () => {
+        console.log('Preview button event triggered');
+        preview();
+      });
+      document.getElementById('convertBtn').addEventListener('click', () => {
+        console.log('Convert button event triggered');
+        convert();
+      });
       document.getElementById('downloadBtn').addEventListener('click', () => {
+        console.log('Download button event triggered');
         if (!currentDownloadUrl) { 
           setStatus('请先转换生成模型', '⚠️'); 
           return; 
