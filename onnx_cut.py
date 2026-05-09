@@ -25,12 +25,25 @@ class CutConfig:
     strides: tuple[int, ...] = (8, 16, 32)
     simplify: bool = False
     dry_run: bool = False
+    # When True, decoupled-head models (yolov8/v11/yolo26) emit one merged output
+    # per stride: Concat(bbox, cls) along channel -> Transpose. yolov5 ignores it.
+    merge_stride: bool = False
+
+
+class CutOutput(NamedTuple):
+    # 1 source = direct Transpose; >1 source = Concat(axis=1) then Transpose.
+    sources: tuple[TensorInfo, ...]
+    name: str
+    shape: tuple[int, int, int, int]  # NHWC
 
 
 class CutPlan(NamedTuple):
     model_type: str
-    # list of (source_tensor, output_tensor_name, output_shape)
-    outputs: tuple[tuple[TensorInfo, str, tuple[int, int, int, int]], ...]
+    outputs: tuple[CutOutput, ...]
+
+
+class AutoDetectError(RuntimeError):
+    """Raised when model_type='auto' cannot be inferred from the graph."""
 
 
 def _get_value_info(model: onnx.ModelProto) -> dict[str, TensorInfo]:
@@ -229,6 +242,7 @@ def _detect_plan(model: onnx.ModelProto, cfg: CutConfig) -> CutPlan:
         bbox = _pick_best_tensor(bbox_candidates, producer, consumer)
         return (cls, bbox)
 
+    was_auto = cfg.model_type == "auto"
     forced = cfg.model_type
     if forced == "auto":
         yolov5_ch = (cfg.num_classes + 5) * 3
@@ -251,7 +265,7 @@ def _detect_plan(model: onnx.ModelProto, cfg: CutConfig) -> CutPlan:
                 key=lambda s: s,
             )
             hint = "\n  ".join(all_4d) if all_4d else "(none found)"
-            raise RuntimeError(
+            raise AutoDetectError(
                 f"Failed to auto-detect model type.\n"
                 f"Expected yolov5 ch={yolov5_ch}, yolo26 bbox_ch={cfg.yolo26_bbox_ch}, "
                 f"yolov8 bbox_ch={cfg.v8_bbox_ch} at strides={list(cfg.strides)} imgsz={cfg.imgsz}.\n"
@@ -259,60 +273,77 @@ def _detect_plan(model: onnx.ModelProto, cfg: CutConfig) -> CutPlan:
                 f"Try --model-type / --strides / --imgsz / --classes to override."
             )
 
-    if forced == "yolov5":
-        yolov5_ch = (cfg.num_classes + 5) * 3
-        outs: list[tuple[TensorInfo, str, tuple[int, int, int, int]]] = []
-        for stride in cfg.strides:
-            h, w = hws[stride]
-            src = pick((1, yolov5_ch, h, w))
-            outs.append((src, f"stride_{stride}", (1, h, w, yolov5_ch)))
-        return CutPlan("yolov5", tuple(outs))
+    try:
+        if forced == "yolov5":
+            yolov5_ch = (cfg.num_classes + 5) * 3
+            outs: list[CutOutput] = []
+            for stride in cfg.strides:
+                h, w = hws[stride]
+                src = pick((1, yolov5_ch, h, w))
+                outs.append(CutOutput(sources=(src,), name=f"stride_{stride}", shape=(1, h, w, yolov5_ch)))
+            return CutPlan("yolov5", tuple(outs))
 
-    if forced in ("yolov8", "yolov11"):
-        order = cfg.decoupled_order or "cls-bbox"
-        outs = []
-        for stride in cfg.strides:
-            h, w = hws[stride]
-            cls, bbox = pick_pair((1, cfg.num_classes, h, w), (1, cfg.v8_bbox_ch, h, w))
-            if order == "cls-bbox":
-                outs.extend(
-                    [
-                        (cls, f"stride_{stride}_cls", (1, h, w, cfg.num_classes)),
-                        (bbox, f"stride_{stride}_bbox", (1, h, w, cfg.v8_bbox_ch)),
-                    ]
-                )
-            else:
-                outs.extend(
-                    [
-                        (bbox, f"stride_{stride}_bbox", (1, h, w, cfg.v8_bbox_ch)),
-                        (cls, f"stride_{stride}_cls", (1, h, w, cfg.num_classes)),
-                    ]
-                )
-        return CutPlan(forced, tuple(outs))
+        if forced in ("yolov8", "yolov11"):
+            outs = _build_decoupled_outputs(
+                cfg=cfg,
+                pick_pair=pick_pair,
+                hws=hws,
+                bbox_ch=cfg.v8_bbox_ch,
+                default_order="cls-bbox",
+            )
+            return CutPlan(forced, tuple(outs))
 
-    if forced == "yolo26":
-        order = cfg.decoupled_order or "bbox-cls"
-        outs = []
-        for stride in cfg.strides:
-            h, w = hws[stride]
-            cls, bbox = pick_pair((1, cfg.num_classes, h, w), (1, cfg.yolo26_bbox_ch, h, w))
-            if order == "cls-bbox":
-                outs.extend(
-                    [
-                        (cls, f"stride_{stride}_cls", (1, h, w, cfg.num_classes)),
-                        (bbox, f"stride_{stride}_bbox", (1, h, w, cfg.yolo26_bbox_ch)),
-                    ]
-                )
-            else:
-                outs.extend(
-                    [
-                        (bbox, f"stride_{stride}_bbox", (1, h, w, cfg.yolo26_bbox_ch)),
-                        (cls, f"stride_{stride}_cls", (1, h, w, cfg.num_classes)),
-                    ]
-                )
-        return CutPlan("yolo26", tuple(outs))
+        if forced == "yolo26":
+            outs = _build_decoupled_outputs(
+                cfg=cfg,
+                pick_pair=pick_pair,
+                hws=hws,
+                bbox_ch=cfg.yolo26_bbox_ch,
+                default_order="bbox-cls",
+            )
+            return CutPlan("yolo26", tuple(outs))
 
-    raise RuntimeError(f"Unsupported model type: {forced}")
+        raise RuntimeError(f"Unsupported model type: {forced}")
+    except RuntimeError as e:
+        if was_auto and not isinstance(e, AutoDetectError):
+            # Coarse auto-pick chose a type but per-stride lookup failed; surface as auto-detect failure.
+            raise AutoDetectError(
+                f"Auto-detected '{forced}' but failed to locate all stride heads: {e}\n"
+                f"Try setting --model-type explicitly, or check --strides/--imgsz/--classes."
+            ) from e
+        raise
+
+
+def _build_decoupled_outputs(
+    *,
+    cfg: CutConfig,
+    pick_pair,
+    hws: dict[int, tuple[int, int]],
+    bbox_ch: int,
+    default_order: str,
+) -> list[CutOutput]:
+    order = cfg.decoupled_order or default_order
+    outs: list[CutOutput] = []
+    for stride in cfg.strides:
+        h, w = hws[stride]
+        cls, bbox = pick_pair((1, cfg.num_classes, h, w), (1, bbox_ch, h, w))
+        if cfg.merge_stride:
+            # User-spec: bbox in front, cls after, concat along channel then transpose.
+            outs.append(
+                CutOutput(
+                    sources=(bbox, cls),
+                    name=f"stride_{stride}",
+                    shape=(1, h, w, bbox_ch + cfg.num_classes),
+                )
+            )
+            continue
+        if order == "cls-bbox":
+            outs.append(CutOutput((cls,), f"stride_{stride}_cls", (1, h, w, cfg.num_classes)))
+            outs.append(CutOutput((bbox,), f"stride_{stride}_bbox", (1, h, w, bbox_ch)))
+        else:
+            outs.append(CutOutput((bbox,), f"stride_{stride}_bbox", (1, h, w, bbox_ch)))
+            outs.append(CutOutput((cls,), f"stride_{stride}_cls", (1, h, w, cfg.num_classes)))
+    return outs
 
 
 def _prune_to_outputs(model: onnx.ModelProto, output_tensors: list[TensorInfo]) -> onnx.ModelProto:
@@ -400,43 +431,64 @@ def cut_ultralytics_onnx(in_path: Path, out_path: Path, cfg: CutConfig) -> None:
 
     if cfg.dry_run:
         print(f"[dry-run] model_type={plan.model_type}")
-        for src, out_name, out_shape in plan.outputs:
-            print(f"[dry-run] {out_name}: from {src.name} {src.shape} -> {out_shape}")
+        for out in plan.outputs:
+            srcs = " + ".join(f"{s.name} {tuple(s.shape)}" for s in out.sources)
+            print(f"[dry-run] {out.name}: from {srcs} -> {out.shape}")
         return
 
-    # 1) prune to raw head tensors (pre-transpose)
-    raw_outputs = [src for (src, _, _) in plan.outputs]
+    # 1) prune to raw head tensors (pre-concat/transpose), de-duplicated.
+    seen_raw: set[str] = set()
+    raw_outputs: list[TensorInfo] = []
+    for out in plan.outputs:
+        for s in out.sources:
+            if s.name not in seen_raw:
+                seen_raw.add(s.name)
+                raw_outputs.append(s)
     pruned = _prune_to_outputs(model, raw_outputs)
 
-    # 2) optional simplify before adding transpose
+    # 2) optional simplify before adding concat/transpose nodes
     if cfg.simplify:
         pruned = _try_simplify(pruned)
 
-    # 3) add transpose nodes, set new outputs
+    # 3) add concat (if needed) + transpose nodes, set new outputs
     inferred = shape_inference.infer_shapes(pruned)
     vi = _get_value_info(inferred)
 
-    transpose_nodes: list[onnx.NodeProto] = []
+    new_nodes: list[onnx.NodeProto] = []
     final_outputs_vi: list[onnx.ValueInfoProto] = []
-    for src, out_name, out_shape in plan.outputs:
-        src_info = vi.get(src.name, src)
-        node = onnx.helper.make_node(
-            "Transpose",
-            inputs=[src.name],
-            outputs=[out_name],
-            perm=[0, 2, 3, 1],
-            name=f"{out_name}_transpose",
-        )
-        transpose_nodes.append(node)
-        final_outputs_vi.append(
-            onnx.helper.make_tensor_value_info(
-                out_name,
-                src_info.elem_type if src_info.elem_type else TensorProto.FLOAT,
-                list(out_shape),
+    for out in plan.outputs:
+        head_src_info = vi.get(out.sources[0].name, out.sources[0])
+        elem_type = head_src_info.elem_type if head_src_info.elem_type else TensorProto.FLOAT
+
+        if len(out.sources) == 1:
+            transpose_input = out.sources[0].name
+        else:
+            concat_out = f"{out.name}_concat"
+            new_nodes.append(
+                onnx.helper.make_node(
+                    "Concat",
+                    inputs=[s.name for s in out.sources],
+                    outputs=[concat_out],
+                    axis=1,
+                    name=f"{out.name}_concat_node",
+                )
+            )
+            transpose_input = concat_out
+
+        new_nodes.append(
+            onnx.helper.make_node(
+                "Transpose",
+                inputs=[transpose_input],
+                outputs=[out.name],
+                perm=[0, 2, 3, 1],
+                name=f"{out.name}_transpose",
             )
         )
+        final_outputs_vi.append(
+            onnx.helper.make_tensor_value_info(out.name, elem_type, list(out.shape))
+        )
 
-    pruned.graph.node.extend(transpose_nodes)
+    pruned.graph.node.extend(new_nodes)
     del pruned.graph.output[:]
     pruned.graph.output.extend(final_outputs_vi)
 

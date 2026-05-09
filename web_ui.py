@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
 from export_ultralytics import export_pt_to_onnx
-from onnx_cut import CutConfig, cut_ultralytics_onnx
+from onnx_cut import AutoDetectError, CutConfig, cut_ultralytics_onnx
 
 
 @dataclass
@@ -218,6 +218,11 @@ def _load_graph_json(path: Path) -> dict[str, Any]:
         inferred = model
     shapes = _get_tensor_shape_map(inferred)
     return _onnx_to_cytoscape_elements(inferred, include_initializers=False, tensor_shapes=shapes)
+
+
+def _format_plan_output(out) -> str:
+    srcs = " + ".join(f"{s.name} {tuple(s.shape)}" for s in out.sources)
+    return f"{out.name}: {srcs} -> {tuple(out.shape)}"
 
 
 def _purge_old_jobs() -> None:
@@ -512,6 +517,119 @@ HTML = """<!doctype html>
       ::-webkit-scrollbar-track { background: rgba(15, 23, 42, 0.3); }
       ::-webkit-scrollbar-thumb { background: rgba(148, 163, 184, 0.3); border-radius: 4px; }
       ::-webkit-scrollbar-thumb:hover { background: rgba(148, 163, 184, 0.5); }
+
+      .dropzone {
+        position: relative;
+        border: 2px dashed var(--border);
+        border-radius: 12px;
+        padding: 24px 16px;
+        text-align: center;
+        cursor: pointer;
+        background: rgba(15, 23, 42, 0.4);
+        transition: all 0.2s ease;
+      }
+      .dropzone:hover { border-color: var(--accent); background: rgba(59, 130, 246, 0.08); }
+      .dropzone.drag-over {
+        border-color: var(--accent);
+        background: rgba(59, 130, 246, 0.15);
+        transform: scale(1.01);
+      }
+      .dropzone.has-file {
+        border-style: solid;
+        border-color: var(--success);
+        background: rgba(16, 185, 129, 0.06);
+      }
+      .dropzone-icon { font-size: 30px; margin-bottom: 6px; line-height: 1; }
+      .dropzone-text { font-size: 13px; font-weight: 500; color: var(--text); }
+      .dropzone-hint {
+        font-size: 11px;
+        color: var(--text-muted);
+        margin-top: 6px;
+        font-family: 'SF Mono', Monaco, monospace;
+        word-break: break-all;
+      }
+
+      .progress-wrap { margin-top: 4px; }
+      .progress {
+        position: relative;
+        width: 100%;
+        height: 6px;
+        background: rgba(15, 23, 42, 0.6);
+        border-radius: 4px;
+        overflow: hidden;
+      }
+      .progress-bar {
+        height: 100%;
+        background: linear-gradient(90deg, var(--accent), #1d4ed8);
+        width: 0%;
+        transition: width 0.15s linear;
+        border-radius: 4px;
+      }
+      .progress.indeterminate .progress-bar {
+        width: 35%;
+        animation: progressSlide 1.4s infinite ease-in-out;
+      }
+      @keyframes progressSlide {
+        0% { transform: translateX(-100%); }
+        100% { transform: translateX(290%); }
+      }
+      .progress-label {
+        font-size: 10px;
+        color: var(--text-muted);
+        margin-top: 4px;
+        text-align: right;
+        font-family: 'SF Mono', Monaco, monospace;
+      }
+
+      .toast-container {
+        position: fixed;
+        top: 24px;
+        right: 24px;
+        z-index: 1000;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        pointer-events: none;
+      }
+      .toast {
+        background: rgba(30, 41, 59, 0.95);
+        backdrop-filter: blur(20px);
+        border: 1px solid var(--border);
+        border-left: 4px solid var(--accent);
+        border-radius: 10px;
+        padding: 12px 16px;
+        min-width: 260px;
+        max-width: 420px;
+        font-size: 13px;
+        color: var(--text);
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+        animation: toastIn 0.25s ease;
+        pointer-events: auto;
+      }
+      .toast-success { border-left-color: var(--success); }
+      .toast-warning { border-left-color: var(--warning); }
+      .toast-error { border-left-color: var(--danger); }
+      .toast.toast-leaving { animation: toastOut 0.25s ease forwards; }
+      @keyframes toastIn {
+        from { transform: translateX(20px); opacity: 0; }
+        to { transform: translateX(0); opacity: 1; }
+      }
+      @keyframes toastOut {
+        to { transform: translateX(20px); opacity: 0; }
+      }
+
+      .field-error {
+        border-color: var(--danger) !important;
+        box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.18) !important;
+        animation: fieldShake 0.45s ease;
+      }
+      @keyframes fieldShake {
+        0%, 100% { transform: translateX(0); }
+        20% { transform: translateX(-5px); }
+        40% { transform: translateX(5px); }
+        60% { transform: translateX(-3px); }
+        80% { transform: translateX(3px); }
+      }
     </style>
   </head>
   <body>
@@ -533,9 +651,11 @@ HTML = """<!doctype html>
         </div>
         <div class="panel">
           <div class="section">
-            <div class="row">
-              <label>模型文件</label>
-              <input id="modelFile" type="file" accept=".onnx,.pt" />
+            <div class="dropzone" id="dropzone">
+              <input id="modelFile" type="file" accept=".onnx,.pt" style="display:none" />
+              <div class="dropzone-icon">📁</div>
+              <div class="dropzone-text">点击或拖入 .pt / .onnx 文件</div>
+              <div class="dropzone-hint" id="dropzoneHint">未选择文件</div>
             </div>
           </div>
 
@@ -587,12 +707,21 @@ HTML = """<!doctype html>
               <label>simplify</label>
               <input id="simplify" type="checkbox" />
             </div>
+            <div class="row">
+              <label>merge_stride</label>
+              <input id="mergeStride" type="checkbox" title="Concat(bbox,cls) per stride before transpose (yolov8/v11/yolo26)" />
+            </div>
           </div>
 
           <div class="actions">
             <button id="previewBtn">预览</button>
             <button id="convertBtn">转换</button>
             <button id="downloadBtn" disabled>下载</button>
+          </div>
+
+          <div class="progress-wrap" id="progressWrap" style="display:none">
+            <div class="progress" id="progress"><div class="progress-bar" id="progressBar"></div></div>
+            <div class="progress-label" id="progressLabel"></div>
           </div>
 
           <div class="status" id="statusBox">💡 请选择 .pt 或 .onnx 模型文件开始</div>
@@ -613,9 +742,7 @@ HTML = """<!doctype html>
       </div>
     </div>
 
-    <script src="/static/cytoscape.min.js"></script>
-    <script src="/static/dagre.min.js"></script>
-    <script src="/static/cytoscape-dagre.js"></script>
+    <div class="toast-container" id="toastContainer"></div>
     <script>
       let currentDownloadUrl = null;
       let currentJobId = null;
@@ -638,12 +765,74 @@ HTML = """<!doctype html>
         container.appendChild(iframe);
       }
 
-      async function buildFormData() {
+      const NL = String.fromCharCode(10);
+
+      function showToast(msg, kind, duration) {
+        const container = document.getElementById('toastContainer');
+        const t = document.createElement('div');
+        t.className = 'toast toast-' + (kind || 'info');
+        t.textContent = msg;
+        container.appendChild(t);
+        const ms = duration || 3500;
+        setTimeout(() => {
+          t.classList.add('toast-leaving');
+          setTimeout(() => t.remove(), 300);
+        }, ms);
+      }
+
+      function showProgress(pct, label) {
+        const wrap = document.getElementById('progressWrap');
+        const bar = document.getElementById('progressBar');
+        const prog = document.getElementById('progress');
+        const lbl = document.getElementById('progressLabel');
+        if (pct === null) {
+          wrap.style.display = 'none';
+          prog.classList.remove('indeterminate');
+          bar.style.width = '0%';
+          lbl.textContent = '';
+          return;
+        }
+        wrap.style.display = 'block';
+        if (pct < 0) {
+          prog.classList.add('indeterminate');
+          lbl.textContent = label || '处理中…';
+        } else {
+          prog.classList.remove('indeterminate');
+          bar.style.width = pct + '%';
+          lbl.textContent = (label ? label + ' · ' : '') + Math.round(pct) + '%';
+        }
+      }
+
+      function flashField(id) {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.classList.remove('field-error');
+        void el.offsetWidth;
+        el.classList.add('field-error');
+        setTimeout(() => el.classList.remove('field-error'), 1500);
+      }
+
+      function setSelectedFile(f) {
+        const hint = document.getElementById('dropzoneHint');
+        const dz = document.getElementById('dropzone');
+        if (!f) {
+          hint.textContent = '未选择文件';
+          dz.classList.remove('has-file');
+          return;
+        }
+        const sizeMb = (f.size / (1024 * 1024)).toFixed(2);
+        hint.textContent = f.name + '  ·  ' + sizeMb + ' MB';
+        dz.classList.add('has-file');
+        setStatus('已选择: ' + f.name, '📦');
+      }
+
+      function buildFormData() {
         const fd = new FormData();
         const f = document.getElementById('modelFile').files[0];
-        if (!f) { 
-          setStatus('请先选择一个 .pt 或 .onnx 文件', '⚠️'); 
-          return null; 
+        if (!f) {
+          showToast('请先选择 .pt 或 .onnx 文件', 'warning');
+          flashField('dropzone');
+          return null;
         }
         fd.append('model_file', f);
         fd.append('imgsz', document.getElementById('imgsz').value);
@@ -654,125 +843,162 @@ HTML = """<!doctype html>
         fd.append('decoupled_order', document.getElementById('decoupledOrder').value);
         fd.append('strides', document.getElementById('strides').value);
         fd.append('simplify', document.getElementById('simplify').checked ? 'true' : 'false');
+        fd.append('merge_stride', document.getElementById('mergeStride').checked ? 'true' : 'false');
         return fd;
       }
 
+      function uploadWithProgress(url, fd, onUploadPct, onUploadDone) {
+        return new Promise((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          xhr.open('POST', url);
+          xhr.upload.addEventListener('progress', (e) => {
+            if (e.lengthComputable && onUploadPct) onUploadPct(e.loaded / e.total * 100);
+          });
+          xhr.upload.addEventListener('load', () => { if (onUploadDone) onUploadDone(); });
+          xhr.addEventListener('load', () => {
+            let data;
+            try { data = JSON.parse(xhr.responseText); }
+            catch (e) { data = { detail: xhr.responseText || String(e) }; }
+            resolve({ ok: xhr.status >= 200 && xhr.status < 300, status: xhr.status, data });
+          });
+          xhr.addEventListener('error', () => reject(new Error('网络错误')));
+          xhr.addEventListener('abort', () => reject(new Error('已取消')));
+          xhr.send(fd);
+        });
+      }
+
+      function handleApiError(action, status, data) {
+        const detail = (data && data.detail) || ('HTTP ' + status);
+        if (data && data.error_code === 'auto_detect_failed') {
+          flashField('modelType');
+          showToast('自动识别失败 · 请手动选择 model_type', 'error', 6000);
+          setStatus(detail, '❌');
+          return;
+        }
+        const firstLine = detail.split(NL)[0];
+        showToast(action + '失败: ' + firstLine, 'error', 5000);
+        setStatus(detail, '❌');
+      }
+
       async function preview() {
-        console.log('Preview button clicked');
-        const fd = await buildFormData();
+        const fd = buildFormData();
         if (!fd) return;
-        
         const btn = document.getElementById('previewBtn');
         btn.disabled = true;
-        setStatus('预览中…（识别模型类型和输出张量）', '🔍');
-        
+        setStatus('上传并识别模型…', '🔍');
+        showProgress(0, '上传中');
         try {
-          console.log('Sending preview request...');
-          const resp = await fetch('/api/preview', { method: 'POST', body: fd });
-          console.log('Response status:', resp.status);
-          const data = await resp.json();
-          console.log('Response data:', data);
-          
-          if (!resp.ok) { 
-            setStatus('预览失败：' + (data.detail || JSON.stringify(data)), '❌'); 
-            return; 
-          }
-          
-          const msg = '[预览完成]' + String.fromCharCode(10) + 
-                      'model_type: ' + data.model_type + String.fromCharCode(10) +
-                      'outputs:' + String.fromCharCode(10) + '  ' + data.outputs.join(String.fromCharCode(10) + '  ');
+          const r = await uploadWithProgress(
+            '/api/preview', fd,
+            (pct) => showProgress(pct, '上传中'),
+            () => showProgress(-1, '识别中'),
+          );
+          showProgress(null);
+          if (!r.ok) { handleApiError('预览', r.status, r.data); return; }
+          const data = r.data;
+          const msg = '[预览完成]' + NL +
+                      'model_type: ' + data.model_type + NL +
+                      'outputs:' + NL + '  ' + data.outputs.join(NL + '  ');
           setStatus(msg, '✅');
+          showToast('识别为 ' + data.model_type + ' · ' + data.outputs.length + ' 输出', 'success');
           document.getElementById('origStats').textContent = data.model_type;
-          document.getElementById('origDetails').textContent = '模型类型: ' + data.model_type + String.fromCharCode(10) + '输出数量: ' + data.outputs.length;
-          
-          if (data.original_onnx_url) {
-            showNetron('origGraph', data.original_onnx_url);
-          }
+          document.getElementById('origDetails').textContent = '模型类型: ' + data.model_type + NL + '输出数量: ' + data.outputs.length;
+          if (data.original_onnx_url) showNetron('origGraph', data.original_onnx_url);
         } catch (e) {
-          console.error('Preview error:', e);
-          setStatus('异常：' + e.message, '❌');
+          showProgress(null);
+          setStatus('异常: ' + e.message, '❌');
+          showToast('网络异常: ' + e.message, 'error');
         } finally {
           btn.disabled = false;
         }
       }
 
       async function convert() {
-        const fd = await buildFormData();
+        const fd = buildFormData();
         if (!fd) return;
-
         setDownloadEnabled(false);
         currentDownloadUrl = null;
-
         const btn = document.getElementById('convertBtn');
         btn.disabled = true;
-        setStatus('处理中…（上传/导出/裁剪中）', '⚙️');
-
+        setStatus('上传并裁剪模型…', '⚙️');
+        showProgress(0, '上传中');
         try {
-          const resp = await fetch('/api/convert', { method: 'POST', body: fd });
-          const text = await resp.text();
-          let data = null;
-          try { data = JSON.parse(text); } catch (e) { data = { detail: text || String(e) }; }
-          
-          if (!resp.ok) {
-            setStatus('失败：' + (data.detail || JSON.stringify(data)), '❌');
-            return;
-          }
-          
-          const msg = '[转换完成]' + String.fromCharCode(10) + 
-                      'model_type: ' + data.model_type + String.fromCharCode(10) +
-                      'outputs:' + String.fromCharCode(10) + '  ' + data.outputs.join(String.fromCharCode(10) + '  ');
+          const r = await uploadWithProgress(
+            '/api/convert', fd,
+            (pct) => showProgress(pct, '上传中'),
+            () => showProgress(-1, '裁剪中'),
+          );
+          showProgress(null);
+          if (!r.ok) { handleApiError('转换', r.status, r.data); return; }
+          const data = r.data;
+          const msg = '[转换完成]' + NL +
+                      'model_type: ' + data.model_type + NL +
+                      'outputs:' + NL + '  ' + data.outputs.join(NL + '  ');
           setStatus(msg, '✅');
-          
+          showToast('转换完成 · 可下载', 'success');
           currentJobId = data.job_id;
           currentDownloadUrl = data.download_url;
           setDownloadEnabled(true);
-          
           document.getElementById('origStats').textContent = data.model_type;
           document.getElementById('cutStats').textContent = 'NHWC';
-          document.getElementById('origDetails').textContent = '模型类型: ' + data.model_type + String.fromCharCode(10) + '输出数量: ' + data.outputs.length;
-          document.getElementById('cutDetails').textContent = '裁剪完成' + String.fromCharCode(10) + '输出数量: ' + data.outputs.length + String.fromCharCode(10) + '格式: NHWC';
-          
-          if (data.original_onnx_url) {
-            showNetron('origGraph', data.original_onnx_url);
-          }
-          
-          if (data.cut_onnx_url) {
-            showNetron('cutGraph', data.cut_onnx_url);
-          }
+          document.getElementById('origDetails').textContent = '模型类型: ' + data.model_type + NL + '输出数量: ' + data.outputs.length;
+          document.getElementById('cutDetails').textContent = '裁剪完成' + NL + '输出数量: ' + data.outputs.length + NL + '格式: NHWC';
+          if (data.original_onnx_url) showNetron('origGraph', data.original_onnx_url);
+          if (data.cut_onnx_url) showNetron('cutGraph', data.cut_onnx_url);
         } catch (e) {
-          setStatus('异常：' + e.message, '❌');
-          console.error('Convert error:', e);
+          showProgress(null);
+          setStatus('异常: ' + e.message, '❌');
+          showToast('网络异常: ' + e.message, 'error');
         } finally {
           btn.disabled = false;
         }
       }
 
-      document.getElementById('previewBtn').addEventListener('click', function() {
-        console.log('Preview button event triggered');
-        preview();
-      });
-      document.getElementById('convertBtn').addEventListener('click', function() {
-        console.log('Convert button event triggered');
-        convert();
-      });
-      document.getElementById('downloadBtn').addEventListener('click', function() {
-        console.log('Download button event triggered');
-        if (!currentDownloadUrl) { 
-          setStatus('请先转换生成模型', '⚠️'); 
-          return; 
-        }
+      (function setupDropzone() {
+        const dz = document.getElementById('dropzone');
+        const inp = document.getElementById('modelFile');
+        dz.addEventListener('click', () => inp.click());
+        ['dragenter', 'dragover'].forEach((ev) => {
+          dz.addEventListener(ev, (e) => {
+            e.preventDefault(); e.stopPropagation();
+            dz.classList.add('drag-over');
+          });
+        });
+        ['dragleave', 'drop'].forEach((ev) => {
+          dz.addEventListener(ev, (e) => {
+            e.preventDefault(); e.stopPropagation();
+            dz.classList.remove('drag-over');
+          });
+        });
+        dz.addEventListener('drop', (e) => {
+          const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+          if (!f) return;
+          if (!/\.(onnx|pt)$/i.test(f.name)) {
+            showToast('只支持 .onnx 或 .pt 文件', 'warning');
+            return;
+          }
+          const dt = new DataTransfer();
+          dt.items.add(f);
+          inp.files = dt.files;
+          setSelectedFile(f);
+        });
+        inp.addEventListener('change', (e) => setSelectedFile(e.target.files[0]));
+      })();
+
+      document.getElementById('previewBtn').addEventListener('click', preview);
+      document.getElementById('convertBtn').addEventListener('click', convert);
+      document.getElementById('downloadBtn').addEventListener('click', () => {
+        if (!currentDownloadUrl) { showToast('请先转换生成模型', 'warning'); return; }
         window.location.href = currentDownloadUrl;
       });
 
-      // Toggle collapse for left and right panels
-      document.getElementById('toggleLeft').addEventListener('click', function() {
+      document.getElementById('toggleLeft').addEventListener('click', () => {
         const col = document.getElementById('leftCol');
         const btn = document.getElementById('toggleLeft');
         col.classList.toggle('collapsed');
         btn.textContent = col.classList.contains('collapsed') ? '▶' : '◀';
       });
-
-      document.getElementById('toggleRight').addEventListener('click', function() {
+      document.getElementById('toggleRight').addEventListener('click', () => {
         const col = document.getElementById('rightCol');
         const btn = document.getElementById('toggleRight');
         col.classList.toggle('collapsed');
@@ -822,6 +1048,7 @@ async def api_preview(
     yolo26_bbox_ch: str = Form("4"),
     decoupled_order: str = Form(""),
     strides: str = Form("8,16,32"),
+    merge_stride: str = Form("false"),
 ) -> JSONResponse:
     """Dry-run: detect plan and return output tensor info without writing any file."""
     try:
@@ -831,6 +1058,7 @@ async def api_preview(
         y26_bbox = int(yolo26_bbox_ch)
         order = decoupled_order.strip() or None
         strides_tuple = _parse_strides(strides)
+        do_merge = merge_stride.strip().lower() in ("true", "1", "yes")
     except Exception as e:
         return JSONResponse({"detail": f"Invalid parameters: {e}"}, status_code=400)
 
@@ -860,13 +1088,14 @@ async def api_preview(
             yolo26_bbox_ch=y26_bbox,
             decoupled_order=order,
             strides=strides_tuple,
+            merge_stride=do_merge,
             dry_run=True,
         )
         try:
             from onnx_cut import _detect_plan
             model_proto = onnx.load(str(original_onnx))
             plan = _detect_plan(model_proto, cfg)
-            outputs = [f"{name}: {src.shape} -> {shape}" for (src, name, shape) in plan.outputs]
+            outputs = [_format_plan_output(out) for out in plan.outputs]
             
             # 保存到 JOBS 以便访问
             job_id = uuid.uuid4().hex
@@ -884,22 +1113,23 @@ async def api_preview(
                 "outputs": outputs,
                 "original_onnx_url": f"/api/view_onnx/{job_id}/original"
             })
+        except AutoDetectError as e:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+            return JSONResponse(
+                {
+                    "detail": (
+                        "无法自动识别模型类型。\n\n"
+                        f"{e}\n\n"
+                        "请在 model_type 下拉框中手动选择 (yolov5/yolov8/yolov11/yolo26)，"
+                        "或检查 imgsz / classes 是否与模型匹配。"
+                    ),
+                    "error_code": "auto_detect_failed",
+                },
+                status_code=400,
+            )
         except RuntimeError as e:
             shutil.rmtree(tmpdir, ignore_errors=True)
-            error_msg = str(e)
-            if "No candidates to pick from" in error_msg:
-                error_msg = (
-                    "无法识别模型结构。可能原因：\n"
-                    "1. 模型不是标准的 YOLOv5/v8/v11/v26\n"
-                    "2. 输入尺寸(imgsz)不正确\n"
-                    "3. 类别数(classes)不正确\n"
-                    "4. 模型已经被裁剪过\n\n"
-                    "建议：\n"
-                    "- 检查 imgsz 参数（如 640, 416, 1280 等）\n"
-                    "- 检查 classes 参数（COCO=80）\n"
-                    "- 尝试手动指定 model_type"
-                )
-            return JSONResponse({"detail": error_msg}, status_code=400)
+            return JSONResponse({"detail": str(e)}, status_code=400)
         except Exception as e:
             import traceback
             traceback.print_exc()
@@ -921,6 +1151,7 @@ async def api_convert(
     decoupled_order: str = Form(""),
     strides: str = Form("8,16,32"),
     simplify: str = Form("false"),
+    merge_stride: str = Form("false"),
 ) -> JSONResponse:
     try:
         imgsz_tuple = _parse_imgsz(imgsz)
@@ -930,6 +1161,7 @@ async def api_convert(
         order = decoupled_order.strip() or None
         strides_tuple = _parse_strides(strides)
         do_simplify = simplify.strip().lower() in ("true", "1", "yes")
+        do_merge = merge_stride.strip().lower() in ("true", "1", "yes")
     except Exception as e:
         return JSONResponse({"detail": f"Invalid parameters: {e}"}, status_code=400)
 
@@ -959,12 +1191,26 @@ async def api_convert(
         decoupled_order=order,
         strides=strides_tuple,
         simplify=do_simplify,
+        merge_stride=do_merge,
         dry_run=False,
     )
 
     cut_path = tmpdir / "cut.onnx"
     try:
         cut_ultralytics_onnx(original_onnx, cut_path, cfg)
+    except AutoDetectError as e:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        return JSONResponse(
+            {
+                "detail": (
+                    "无法自动识别模型类型。\n\n"
+                    f"{e}\n\n"
+                    "请在 model_type 下拉框中手动选择 (yolov5/yolov8/yolov11/yolo26)。"
+                ),
+                "error_code": "auto_detect_failed",
+            },
+            status_code=400,
+        )
     except Exception as e:
         return JSONResponse({"detail": f"Cut failed: {e}"}, status_code=500)
 
@@ -974,24 +1220,13 @@ async def api_convert(
     except Exception as e:
         return JSONResponse({"detail": f"Graph visualization build failed: {e}"}, status_code=500)
 
-    # Use a quick dry-run to report outputs/model_type.
+    # cut_ultralytics_onnx already validated the plan; re-derive for the response.
     try:
         from onnx_cut import _detect_plan
         plan = _detect_plan(onnx.load(str(original_onnx)), cfg)
-        outputs = [f"{name}: {src.shape} -> {shape}" for (src, name, shape) in plan.outputs]
+        outputs = [_format_plan_output(out) for out in plan.outputs]
         detected_type = plan.model_type
-    except RuntimeError as e:
-        error_msg = str(e)
-        if "No candidates to pick from" in error_msg:
-            error_msg = (
-                "无法识别模型结构。可能原因：\n"
-                "1. 模型不是标准的 YOLOv5/v8/v11/v26\n"
-                "2. 输入尺寸(imgsz)不正确\n"
-                "3. 类别数(classes)不正确\n"
-                "4. 模型已经被裁剪过"
-            )
-        return JSONResponse({"detail": error_msg}, status_code=400)
-    except Exception as e:
+    except Exception:
         outputs = []
         detected_type = model_type
 

@@ -81,6 +81,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run onnxsim simplification after pruning (requires: pip install onnxsim)",
     )
     p.add_argument(
+        "--merge-stride",
+        action="store_true",
+        help="For decoupled heads (yolov8/v11/yolo26), Concat(bbox, cls) along channel "
+             "per stride and emit one merged output. Ignored for yolov5.",
+    )
+    p.add_argument(
         "--export-opset",
         type=int,
         default=19,
@@ -134,6 +140,7 @@ def main(argv: list[str] | None = None) -> int:
         decoupled_order=args.decoupled_order,
         strides=args.strides,
         simplify=args.simplify,
+        merge_stride=args.merge_stride,
         dry_run=args.dry_run,
     )
     cut_ultralytics_onnx(in_path, output_path, cfg)
