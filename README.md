@@ -33,6 +33,12 @@ python ultralytics_auto_cut.py model.onnx -o output.onnx
   - transpose 后（NHWC）：`stride_<s>_cls=1xHxWx80`，`stride_<s>_bbox=1xHxWx4`
   - 默认输出顺序匹配 `ax_yolo26_steps.cc`：`bbox, cls` 交错（`bbox8,cls8,bbox16,cls16,bbox32,cls32`）
 
+- **YOLOv8 / YOLOv11-seg（实例分割）**（10 个输出：检测 6 + 每 stride `mask` + 1 个 `proto`）  
+  - 在 `cls`+`bbox` 之外，额外裁出 mask 系数分支（cv4）和 proto  
+  - transpose 后（NHWC）：`stride_<s>_mask=1xHxWx32`，`proto=1x(H/4)x(W/4)x32`  
+  - **`proto` 取激活后（SiLU）的图输出，不是 conv 原始输出**——否则会漏掉激活  
+  - `--seg auto`（默认）检测到 mask/proto 分支就自动输出；`--seg off` 只要检测头
+
 ## 使用
 
 ### Web UI（推荐）
@@ -77,7 +83,16 @@ python ultralytics_auto_cut.py /path/to/model.pt -o model.cut.onnx --imgsz 640
 python ultralytics_auto_cut.py /path/to/model.onnx --dry-run
 ```
 
+**4) 实例分割（YOLOv8/v11-seg）**
+
+```bash
+# seg 模型自动多出 mask + proto（--seg auto 默认）；--classes 记得给对
+python ultralytics_auto_cut.py /path/to/yolov8-seg.onnx -o seg.cut.onnx --imgsz 640 --classes 5
+```
+
 ## 说明
 
 - `--model-type auto` 会基于 head tensor 的 shape 自动识别：`yolov5 / yolov8(yolov11) / yolo26`。
 - 如遇到识别失败，可用 `--model-type` 强制指定，并用 `--imgsz`/通道参数修正。
+- **实例分割**：yolov8/v11-seg 在检测头之外自动裁出 mask 系数（cv4）+ proto，共 10 个输出。
+  `--seg auto`（默认，检测到就输出）/ `on`（强制，缺分支报错）/ `off`（只检测头）；mask 通道用 `--mask-ch`（默认 32）。

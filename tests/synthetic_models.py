@@ -144,3 +144,38 @@ def make_yolo26(*, imgsz: int = 32, num_classes: int = 80, bbox_ch: int = 4,
         imgsz=imgsz, num_classes=num_classes, bbox_ch=bbox_ch,
         strides=strides, name="toy_yolo26",
     )
+
+
+def make_yolov8_seg(*, imgsz: int = 32, num_classes: int = 80, bbox_ch: int = 64,
+                    mask_ch: int = 32, strides: Iterable[int] = (8, 16, 32)) -> onnx.ModelProto:
+    """yolov8-seg: decoupled cls+bbox + per-stride mask-coef (cv4) + proto.
+
+    The proto is emitted as a *post-activation* graph output (Relu here, SiLU in
+    real exports) that shares its shape with the pre-activation Conv, so tests can
+    assert that _pick_proto prefers the graph output over the raw Conv.
+    """
+    h, w = imgsz, imgsz
+    inp = helper.make_tensor_value_info("images", TensorProto.FLOAT, [1, 3, h, w])
+    nodes: list = []
+    inits: list = []
+    outs_vi: list = []
+    for s in strides:
+        ho, wo = h // s, w // s
+        for tag, ch in (("cls", num_classes), ("bbox", bbox_ch), ("mask", mask_ch)):
+            name = f"{tag}_{s}"
+            _conv_branch(
+                in_name="images", out_name=name, in_ch=3, out_ch=ch,
+                h_in=h, w_in=w, h_out=ho, w_out=wo,
+                node_name=f"conv_{tag}_{s}", nodes=nodes, inits=inits,
+            )
+            outs_vi.append(helper.make_tensor_value_info(name, TensorProto.FLOAT, [1, ch, ho, wo]))
+    # proto: Conv (pre-act) -> Relu (post-act) at 1/4 resolution; Relu output is the graph output.
+    ph, pw = h // 4, w // 4
+    _conv_branch(
+        in_name="images", out_name="proto_conv", in_ch=3, out_ch=mask_ch,
+        h_in=h, w_in=w, h_out=ph, w_out=pw,
+        node_name="conv_proto", nodes=nodes, inits=inits,
+    )
+    nodes.append(helper.make_node("Relu", ["proto_conv"], ["proto_out"], name="proto_act"))
+    outs_vi.append(helper.make_tensor_value_info("proto_out", TensorProto.FLOAT, [1, mask_ch, ph, pw]))
+    return _finalize("toy_yolov8_seg", nodes, inits, inp, outs_vi)

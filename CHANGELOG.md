@@ -1,3 +1,21 @@
+# 更新日志 - 2026-07-08
+
+## 🎯 新增：实例分割（YOLOv8 / YOLOv11-seg）支持
+
+在检测头（cls+bbox）之外，自动裁出实例分割所需的 **mask 系数分支（cv4）** 和 **proto**，共 10 个输出：
+
+- 每 stride 多一个 `stride_<s>_mask`（32 通道 mask 系数），外加一个 `proto`（1/4 分辨率，NHWC）
+- **`proto` 取激活后（SiLU）的图输出，而非 conv 原始输出**——否则 mask 会漏掉激活
+- 新增 CLI：`--seg {auto,on,off}`（默认 auto，检测到 mask/proto 分支就输出）、`--mask-ch`（默认 32）
+- 检测模型行为完全不变（无 proto/mask 分支时自动退回纯检测）
+- 新增 6 个单元测试，覆盖检测 / 分割两条路径
+
+```bash
+python ultralytics_auto_cut.py yolov8-seg.onnx -o seg.cut.onnx --imgsz 640 --classes 5
+```
+
+---
+
 # 更新日志 - 2026-04-23
 
 ## 🎨 重大改进：使用 Netron 风格可视化

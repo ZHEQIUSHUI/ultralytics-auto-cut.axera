@@ -13,7 +13,12 @@ from onnx_cut import (
     _detect_plan,
     cut_ultralytics_onnx,
 )
-from tests.synthetic_models import make_yolov5, make_yolov8, make_yolo26
+from tests.synthetic_models import (
+    make_yolov5,
+    make_yolov8,
+    make_yolo26,
+    make_yolov8_seg,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -134,6 +139,63 @@ def test_explicit_model_type_does_not_raise_auto_detect_error():
 
 
 # ---------------------------------------------------------------------------
+# instance segmentation (yolov8/v11-seg): mask-coef branch + proto
+# ---------------------------------------------------------------------------
+
+
+def test_yolov8_seg_auto_detect_and_ten_outputs():
+    model = make_yolov8_seg()
+    plan = _detect_plan(model, CutConfig(model_type="auto"))
+    assert plan.model_type == "yolov8-seg"
+    names = [o.name for o in plan.outputs]
+    assert names == [
+        "stride_8_cls", "stride_8_bbox",
+        "stride_16_cls", "stride_16_bbox",
+        "stride_32_cls", "stride_32_bbox",
+        "stride_8_mask", "stride_16_mask", "stride_32_mask",
+        "proto",
+    ]
+    for out in plan.outputs:
+        assert len(out.sources) == 1
+    masks = [o for o in plan.outputs if o.name.endswith("_mask")]
+    assert all(o.shape[-1] == 32 for o in masks)  # NHWC mask channels
+    proto = next(o for o in plan.outputs if o.name == "proto")
+    assert proto.shape == (1, 8, 8, 32)  # imgsz 32 / 4 = 8, NHWC
+
+
+def test_seg_proto_prefers_post_activation_graph_output():
+    """proto must come from the post-act graph output (proto_out), never the raw Conv."""
+    model = make_yolov8_seg()
+    plan = _detect_plan(model, CutConfig(model_type="auto"))
+    proto = next(o for o in plan.outputs if o.name == "proto")
+    assert proto.sources[0].name == "proto_out"
+
+
+def test_seg_off_keeps_detect_only():
+    model = make_yolov8_seg()
+    plan = _detect_plan(model, CutConfig(model_type="auto", seg="off"))
+    assert plan.model_type == "yolov8"
+    assert len(plan.outputs) == 6
+    assert all("mask" not in o.name and o.name != "proto" for o in plan.outputs)
+
+
+def test_plain_yolov8_under_auto_is_not_seg():
+    """A detect-only model under seg=auto must not falsely trigger seg heads."""
+    model = make_yolov8()
+    plan = _detect_plan(model, CutConfig(model_type="auto"))
+    assert plan.model_type == "yolov8"
+    assert len(plan.outputs) == 6
+
+
+def test_seg_on_without_branch_raises():
+    """--seg on but a plain detect model has no mask/proto branch -> RuntimeError."""
+    model = make_yolov8()
+    cfg = CutConfig(model_type="yolov8", seg="on")
+    with pytest.raises(RuntimeError):
+        _detect_plan(model, cfg)
+
+
+# ---------------------------------------------------------------------------
 # cut_ultralytics_onnx end-to-end (writes file, reload, inspect outputs)
 # ---------------------------------------------------------------------------
 
@@ -213,3 +275,20 @@ def test_cut_pruned_graph_drops_unused_outputs(tmp_path):
     # Nothing else lying around.
     extra_ops = [n.op_type for n in cut.graph.node if n.op_type not in {"Conv", "Transpose"}]
     assert extra_ops == []
+
+
+def test_cut_yolov8_seg_produces_ten_nhwc_outputs(tmp_path):
+    cut, outs = _saved_outputs(tmp_path, make_yolov8_seg(), CutConfig(model_type="auto"))
+    assert len(outs) == 10
+    d = dict(outs)
+    assert d["proto"] == [1, 8, 8, 32]  # NHWC, imgsz 32 / 4
+    for name, shape in outs:
+        assert shape[0] == 1
+        if name.endswith("_mask"):
+            assert shape[-1] == 32
+        elif name.endswith("_cls"):
+            assert shape[-1] == 80
+        elif name.endswith("_bbox"):
+            assert shape[-1] == 64
+    # proto's Transpose feeds from the Relu (post-act), so the Relu survives pruning.
+    assert "Relu" in {n.op_type for n in cut.graph.node}
