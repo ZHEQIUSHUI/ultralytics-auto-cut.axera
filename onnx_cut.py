@@ -28,6 +28,11 @@ class CutConfig:
     # When True, decoupled-head models (yolov8/v11/yolo26) emit one merged output
     # per stride: Concat(bbox, cls) along channel -> Transpose. yolov5 ignores it.
     merge_stride: bool = False
+    # Instance segmentation (yolov8/v11-seg): also cut the per-stride mask-coefficient
+    # branch (cv4) and the proto. "auto" emits seg heads iff such a branch is present,
+    # "on" requires it (errors otherwise), "off" keeps detect-only behaviour.
+    seg: str = "auto"  # auto|on|off
+    mask_ch: int = 32  # mask-coefficient / proto channels (YOLOv8-seg default: 32)
 
 
 class CutOutput(NamedTuple):
@@ -242,6 +247,52 @@ def _detect_plan(model: onnx.ModelProto, cfg: CutConfig) -> CutPlan:
         bbox = _pick_best_tensor(bbox_candidates, producer, consumer)
         return (cls, bbox)
 
+    graph_out_names = {o.name for o in model.graph.output}
+
+    def _pick_proto(cands: list[TensorInfo]) -> TensorInfo:
+        # The proto is post-activation (SiLU); in ultralytics exports it's a graph
+        # output (output1). Prefer that, and never the raw pre-activation Conv output
+        # (which _pick_best_tensor would favour), or the mask would miss its SiLU.
+        go = [t for t in cands if t.name in graph_out_names]
+        if go:
+            return go[0]
+
+        def rank(t: TensorInfo) -> tuple[int, int]:
+            p = producer.get(t.name)
+            if not p:
+                return (-1, -1)
+            idx, node = p
+            return (0 if node.op_type == "Conv" else 1, idx)  # post-act, latest
+
+        return sorted(cands, key=rank, reverse=True)[0]
+
+    def build_seg_outputs() -> list[CutOutput]:
+        # Instance-seg extra heads: per-stride mask coefficients (cv4, a bare Conv
+        # so _pick_best_tensor lands on it) + the proto. Detected by the presence of
+        # a proto (1, mask_ch, H/4, W/4) plus a mask tensor at every stride.
+        if cfg.seg == "off":
+            return []
+        mc = cfg.mask_ch
+        ph, pw = input_h // 4, input_w // 4
+        proto_cands = tensors_with_shape((1, mc, ph, pw))
+        have_masks = all(tensors_with_shape((1, mc, h, w)) for h, w in hws.values())
+        if not proto_cands or not have_masks:
+            if cfg.seg == "on":
+                raise RuntimeError(
+                    f"--seg on but no mask/proto branch found: expected proto "
+                    f"(1,{mc},{ph},{pw}) and per-stride mask (1,{mc},h,w). "
+                    f"Check --mask-ch / --strides / --imgsz."
+                )
+            return []
+        seg_outs: list[CutOutput] = []
+        for stride in cfg.strides:
+            h, w = hws[stride]
+            m = pick((1, mc, h, w))  # cv4 last conv (no act); headish pick lands here
+            seg_outs.append(CutOutput((m,), f"stride_{stride}_mask", (1, h, w, mc)))
+        proto = _pick_proto(proto_cands)
+        seg_outs.append(CutOutput((proto,), "proto", (1, ph, pw, mc)))
+        return seg_outs
+
     was_auto = cfg.model_type == "auto"
     forced = cfg.model_type
     if forced == "auto":
@@ -291,7 +342,9 @@ def _detect_plan(model: onnx.ModelProto, cfg: CutConfig) -> CutPlan:
                 bbox_ch=cfg.v8_bbox_ch,
                 default_order="cls-bbox",
             )
-            return CutPlan(forced, tuple(outs))
+            seg_outs = build_seg_outputs()
+            model_type = f"{forced}-seg" if seg_outs else forced
+            return CutPlan(model_type, tuple(outs) + tuple(seg_outs))
 
         if forced == "yolo26":
             outs = _build_decoupled_outputs(

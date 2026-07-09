@@ -87,6 +87,19 @@ def build_parser() -> argparse.ArgumentParser:
              "per stride and emit one merged output. Ignored for yolov5.",
     )
     p.add_argument(
+        "--seg",
+        choices=["auto", "on", "off"],
+        default="auto",
+        help="Instance segmentation (yolov8/v11-seg): also cut the mask-coefficient "
+             "branch + proto. auto=emit if detected (default), on=require, off=detect-only",
+    )
+    p.add_argument(
+        "--mask-ch",
+        type=int,
+        default=32,
+        help="Mask-coefficient / proto channels for -seg models (default: 32)",
+    )
+    p.add_argument(
         "--export-opset",
         type=int,
         default=19,
@@ -141,6 +154,8 @@ def main(argv: list[str] | None = None) -> int:
         strides=args.strides,
         simplify=args.simplify,
         merge_stride=args.merge_stride,
+        seg=args.seg,
+        mask_ch=args.mask_ch,
         dry_run=args.dry_run,
     )
     cut_ultralytics_onnx(in_path, output_path, cfg)
